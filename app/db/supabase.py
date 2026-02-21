@@ -248,6 +248,30 @@ class DatabaseService:
         )
         return sum(log["amount_ml"] for log in result.data)
 
+    def get_last_water_log(self, user_id: UUID) -> Optional[WaterLog]:
+        """Get the most recent water log for a user."""
+        result = (
+            self.client.table("water_logs")
+            .select("*")
+            .eq("user_id", str(user_id))
+            .order("logged_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return WaterLog(**result.data[0])
+        return None
+
+    def get_hours_since_last_water(self, user_id: UUID) -> Optional[float]:
+        """Get hours since last water log."""
+        last_log = self.get_last_water_log(user_id)
+        if not last_log:
+            return None
+
+        now = datetime.now(last_log.logged_at.tzinfo) if last_log.logged_at.tzinfo else datetime.now()
+        diff = now - last_log.logged_at
+        return diff.total_seconds() / 3600
+
     # Streak operations
     def get_streak(self, user_id: UUID, streak_type: str) -> Optional[Streak]:
         """Get streak for a user."""

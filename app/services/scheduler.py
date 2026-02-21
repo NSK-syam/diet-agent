@@ -79,14 +79,14 @@ class NotificationScheduler:
             replace_existing=True,
         )
 
-        # Water reminders (every 2 hours from 8 AM to 8 PM)
-        if self.settings.enable_water_reminders:
-            self.scheduler.add_job(
-                self._send_water_reminders,
-                CronTrigger(hour="8-20/2", minute=30),
-                id="water_reminders",
-                replace_existing=True,
-            )
+        # Smart water reminders (every hour from 8 AM to 9 PM)
+        # Checks if user hasn't logged water in the last 2-3 hours
+        self.scheduler.add_job(
+            self._send_smart_water_reminders,
+            CronTrigger(hour="8-21", minute=0),
+            id="smart_water_reminders",
+            replace_existing=True,
+        )
 
         self.scheduler.start()
         print("Notification scheduler started")
@@ -280,3 +280,70 @@ Use /log to add anything you missed!"""
                         await self.bot.send_message(user.telegram_id, message)
             except Exception as e:
                 print(f"Error sending water reminder to {user.telegram_id}: {e}")
+
+    async def _send_smart_water_reminders(self) -> None:
+        """Send smart water reminders based on last log time."""
+        print(f"[{datetime.now()}] Checking smart water reminders...")
+
+        users = self.db.get_all_users_with_notifications()
+
+        for user in users:
+            try:
+                settings = self.db.get_user_settings(user.id)
+                if not settings or not settings.notifications_enabled:
+                    continue
+
+                # Check hours since last water log
+                hours_since = self.db.get_hours_since_last_water(user.id)
+
+                # Get daily progress
+                daily_water = self.db.get_daily_water(user.id, date.today())
+                from app.services.nutrition import NutritionCalculator
+                target = NutritionCalculator.calculate_water_target(
+                    user.weight_kg or 70,
+                    user.activity_level or "moderate"
+                )
+
+                # Already reached target - no reminder needed
+                if daily_water >= target:
+                    continue
+
+                # Smart reminder logic
+                should_remind = False
+                message = ""
+
+                if hours_since is None:
+                    # Never logged water today
+                    if datetime.now().hour >= 10:
+                        should_remind = True
+                        message = (
+                            "You haven't logged any water today!\n\n"
+                            f"Target: {target}ml\n\n"
+                            "Tap /water to log your intake."
+                        )
+                elif hours_since >= 3:
+                    # More than 3 hours since last log
+                    should_remind = True
+                    remaining = target - daily_water
+                    glasses = remaining // 250
+
+                    message = (
+                        f"It's been {int(hours_since)} hours since your last water log.\n\n"
+                        f"Today: {daily_water}ml / {target}ml\n"
+                        f"Remaining: {glasses} glasses\n\n"
+                        "Stay hydrated! Tap /water to log."
+                    )
+                elif hours_since >= 2 and daily_water < target * 0.5:
+                    # 2+ hours and less than 50% of target
+                    should_remind = True
+                    message = (
+                        "Gentle reminder to drink water!\n\n"
+                        f"Today: {daily_water}ml / {target}ml ({round(daily_water/target*100)}%)\n\n"
+                        "Tap /water to log."
+                    )
+
+                if should_remind:
+                    await self.bot.send_message(user.telegram_id, message)
+
+            except Exception as e:
+                print(f"Error sending smart water reminder to {user.telegram_id}: {e}")
