@@ -557,31 +557,71 @@ class TelegramBot:
         )
 
     async def water_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /water command - log water intake."""
+        """Handle /water command - log water intake with quick buttons."""
         user = self._get_user(update)
         if not user:
             return await self._ask_setup(update)
 
-        # Parse amount
-        amount = 250  # Default glass
+        # If amount provided, log it directly
         if context.args:
             try:
                 amount = int(context.args[0])
+                self.db.create_water_log(user.id, WaterLogCreate(amount_ml=amount))
+                self.db.update_streak(user.id, "water")
+
+                daily_total = self.db.get_daily_water(user.id, date.today())
+                target = NutritionCalculator.calculate_water_target(
+                    user.weight_kg or 70,
+                    user.activity_level or "moderate"
+                )
+
+                await update.message.reply_text(
+                    f"Logged {amount}ml of water\n\n"
+                    f"Today: {daily_total}ml / {target}ml ({round(daily_total/target*100)}%)"
+                )
+                return
             except ValueError:
                 pass
 
-        self.db.create_water_log(user.id, WaterLogCreate(amount_ml=amount))
-
+        # Show quick buttons
         daily_total = self.db.get_daily_water(user.id, date.today())
         target = NutritionCalculator.calculate_water_target(
             user.weight_kg or 70,
             user.activity_level or "moderate"
         )
 
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("1 Glass (250ml)", callback_data="water_250"),
+                InlineKeyboardButton("2 Glasses (500ml)", callback_data="water_500"),
+            ],
+            [
+                InlineKeyboardButton("Small Bottle (330ml)", callback_data="water_330"),
+                InlineKeyboardButton("Bottle (500ml)", callback_data="water_500"),
+            ],
+            [
+                InlineKeyboardButton("Large Bottle (1L)", callback_data="water_1000"),
+                InlineKeyboardButton("Custom", callback_data="water_custom"),
+            ],
+        ])
+
+        progress_bar = self._create_progress_bar(daily_total, target)
+
         await update.message.reply_text(
-            f"Logged {amount}ml of water\n\n"
-            f"Today: {daily_total}ml / {target}ml ({round(daily_total/target*100)}%)"
+            f"<b>Water Tracker</b>\n\n"
+            f"{progress_bar}\n"
+            f"{daily_total}ml / {target}ml ({round(daily_total/target*100)}%)\n\n"
+            f"Tap to log water:",
+            reply_markup=keyboard,
+            parse_mode="HTML"
         )
+
+    def _create_progress_bar(self, current: int, target: int, length: int = 10) -> str:
+        """Create a visual progress bar."""
+        percentage = min(current / target, 1.0) if target > 0 else 0
+        filled = int(percentage * length)
+        empty = length - filled
+        return f"[{'█' * filled}{'░' * empty}]"
 
     async def weight_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /weight command - log weight."""
@@ -836,6 +876,39 @@ class TelegramBot:
             self.db.update_user_settings(user.id, {"notifications_enabled": new_state})
             await query.edit_message_text(
                 f"Notifications {'enabled' if new_state else 'disabled'}"
+            )
+
+        # Water logging callbacks
+        elif data.startswith("water_"):
+            if data == "water_custom":
+                await query.edit_message_text(
+                    "Send the amount in ml:\n"
+                    "Example: /water 750"
+                )
+                return
+
+            amount = int(data.replace("water_", ""))
+            self.db.create_water_log(user.id, WaterLogCreate(amount_ml=amount))
+            self.db.update_streak(user.id, "water")
+
+            daily_total = self.db.get_daily_water(user.id, date.today())
+            target = NutritionCalculator.calculate_water_target(
+                user.weight_kg or 70,
+                user.activity_level or "moderate"
+            )
+
+            progress_bar = self._create_progress_bar(daily_total, target)
+
+            # Check if target reached
+            congrats = ""
+            if daily_total >= target:
+                congrats = "\n\nYou've reached your water goal today!"
+
+            await query.edit_message_text(
+                f"Logged {amount}ml of water!\n\n"
+                f"{progress_bar}\n"
+                f"Today: {daily_total}ml / {target}ml ({round(daily_total/target*100)}%)"
+                f"{congrats}"
             )
 
         elif data == "goals_recalc":

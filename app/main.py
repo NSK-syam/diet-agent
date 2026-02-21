@@ -3,15 +3,40 @@
 import asyncio
 import signal
 import sys
+import threading
 from contextlib import asynccontextmanager
+
+import uvicorn
+from fastapi import FastAPI
 
 from app.notifications.telegram import TelegramBot
 from app.services.scheduler import NotificationScheduler
+from app.api.routes import router as api_router
+
+
+# Create FastAPI app for health sync API
+api_app = FastAPI(
+    title="Diet Agent API",
+    description="API for syncing health data from Apple Health, Google Fit, and other apps",
+    version="1.0.0"
+)
+api_app.include_router(api_router)
+
+
+def run_api_server():
+    """Run the FastAPI server in a separate thread."""
+    uvicorn.run(api_app, host="0.0.0.0", port=8000, log_level="warning")
 
 
 async def main():
     """Run the Diet Agent bot with scheduler."""
     print("Starting Diet Agent...")
+
+    # Start API server in background thread
+    api_thread = threading.Thread(target=run_api_server, daemon=True)
+    api_thread.start()
+    print("Health Sync API running at http://localhost:8000")
+    print("API docs at http://localhost:8000/docs")
 
     # Create bot
     bot = TelegramBot()
@@ -37,7 +62,7 @@ async def main():
     scheduler.start()
 
     # Start polling for updates
-    print("Diet Agent is running! Press Ctrl+C to stop.")
+    print("Diet Agent bot is running! Press Ctrl+C to stop.")
     await app.updater.start_polling(allowed_updates=["message", "callback_query"])
 
     # Keep running
